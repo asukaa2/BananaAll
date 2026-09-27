@@ -15,10 +15,9 @@ from gradio_ui.theme.dark import Dark
 
 theme = Dark()
 
+ROOT = pathlib.Path(os.getcwd()).resolve()
+BACKEND = ROOT / "backend"
 
-ROOT = os.getcwd()
-
-BACKEND = os.path.join(ROOT, "backend") 
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
@@ -118,12 +117,13 @@ def stream_logs(config, script_name):
         lines.append(format_event(event))
         yield "\n".join(lines[-400:])
 
+
 if __name__ == '__main__':
     parser = ArgumentParser(description='BananaAll Studio.', add_help=True)
     parser.add_argument("--share", action="store_true", dest="share_enabled", default=False, help="Enable sharing")
-        
+
     args = parser.parse_args()
-    
+
     def build_app():
         with gr.Blocks(title="BananaAll Studio") as app:
             gr.Markdown("# 🍌 BananaAll Studio\n"
@@ -133,14 +133,13 @@ if __name__ == '__main__':
                 build_dataset_tab()
                 build_train_tab(stream_logs)
                 build_inference_tab(stream_logs)
-            build_evaluate_tab(stream_logs)
-            
+                build_evaluate_tab(stream_logs)
+
             return app
-    
-    if __name__ == "__main__":
-        build_app().launch(
-            share=args.share_enabled,
-            server_name="0.0.0.0",
-            server_port=7860,
-            theme=theme
-        )
+
+    build_app().launch(
+        share=args.share_enabled,
+        server_name="0.0.0.0",
+        server_port=7860,
+        theme=theme
+    )

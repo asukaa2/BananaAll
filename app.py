@@ -18,7 +18,7 @@ theme = Dark()
 
 ROOT = os.getcwd()
 
-BACKEND = ROOT / "backend"
+BACKEND = os.path.join(ROOT, "backend") 
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 

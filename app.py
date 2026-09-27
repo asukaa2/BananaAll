@@ -120,7 +120,8 @@ def stream_logs(config, script_name):
 if __name__ == '__main__':
     parser = ArgumentParser(description='BananaAll Studio.', add_help=True)
     parser.add_argument("--share", action="store_true", dest="share_enabled", default=False, help="Enable sharing")
-        args = parser.parse_args()
+        
+    args = parser.parse_args()
     
     def build_app():
         with gr.Blocks(title="BananaAll Studio") as app:

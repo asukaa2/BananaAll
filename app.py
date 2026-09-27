@@ -16,7 +16,8 @@ from gradio_ui.theme.dark import Dark
 theme = Dark()
 
 
-ROOT = pathlib.Path(__file__).parent.resolve()
+ROOT = os.getcwd()
+
 BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))

@@ -1,4 +1,5 @@
 """BananaAll Gradio WebUI - main entry point."""
+""" Made by asukaa2 for colab"""
 import json
 import os
 import pathlib
@@ -9,10 +10,11 @@ import threading
 from queue import Queue, Empty
 
 import gradio as gr
+from gradio_ui.theme.dark import Dark
 
-# ---------------------------------------------------------------------------
-# Path setup: make backend/* importable as top-level modules.
-# ---------------------------------------------------------------------------
+theme = Dark()
+
+
 ROOT = pathlib.Path(__file__).parent.resolve()
 BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
@@ -27,10 +29,6 @@ from tabs import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Shared worker utilities: run a backend script as a subprocess and stream
-# its JSON events line-by-line back to the UI via a generator.
-# ---------------------------------------------------------------------------
 def run_worker(script_name, config, cancel_flag=None):
     """Run backend/<script_name> with a temp JSON config; yield parsed events."""
     script = BACKEND / script_name
@@ -118,21 +116,28 @@ def stream_logs(config, script_name):
         lines.append(format_event(event))
         yield "\n".join(lines[-400:])
 
-
-def build_app():
-    with gr.Blocks(title="BananaAll Studio") as app:
-        gr.Markdown("# 🍌 BananaAll Studio\n"
-                    "Train, fine-tune, evaluate, and chat with BananaAll / BananaMind models.")
-
-        with gr.Tabs():
-            build_architecture_tab()
-            build_dataset_tab()
-            build_train_tab(stream_logs)
-            build_inference_tab(stream_logs)
+if __name__ == '__main__':
+    parser = ArgumentParser(description='BananaAll Studio.', add_help=True)
+    parser.add_argument("--share", action="store_true", dest="share_enabled", default=False, help="Enable sharing")
+        args = parser.parse_args()
+    
+    def build_app():
+        with gr.Blocks(title="BananaAll Studio") as app:
+            gr.Markdown("# 🍌 BananaAll Studio\n"
+                        "Train, fine-tune, evaluate, and chat with BananaAll / BananaMind models.")
+            with gr.Tabs():
+                build_architecture_tab()
+                build_dataset_tab()
+                build_train_tab(stream_logs)
+                build_inference_tab(stream_logs)
             build_evaluate_tab(stream_logs)
-
-    return app
-
-
-if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=7860)
+            
+            return app
+    
+    if __name__ == "__main__":
+        build_app().launch(
+            share=args.share_enabled,
+            server_name="0.0.0.0",
+            server_port=7860,
+            theme=theme
+        )

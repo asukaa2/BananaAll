@@ -6,3 +6,4 @@ peft>=0.19
 tokenizers>=0.21
 huggingface_hub>=1.0
 lm-eval>=0.4
+gradio

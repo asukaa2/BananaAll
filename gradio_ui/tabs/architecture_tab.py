@@ -1,6 +1,6 @@
 """Architecture sizing tab — uses backend/architecture.py directly."""
 import pathlib
-import sys
+import sys, os
 
 import gradio as gr
 

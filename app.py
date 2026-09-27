@@ -1,145 +1,109 @@
-"""BananaAll Gradio WebUI - main entry point."""
-""" Made by asukaa2 for colab"""
-import json
-import os
+"""BananaAll Gradio WebUI — improved entry point."""
+import argparse
 import pathlib
-import subprocess
 import sys
-import tempfile
-import threading
-from queue import Queue, Empty
-from argparse import ArgumentParser
 
 import gradio as gr
+
+from gradio_ui._helpers import (
+    CUSTOM_CSS,
+    environment_status,
+    render_status_chips,
+)
 from gradio_ui.theme.dark import Dark
-
-theme = Dark()
-
-ROOT = pathlib.Path(os.getcwd()).resolve()
-BACKEND = ROOT / "backend"
-
-if str(BACKEND) not in sys.path:
-    sys.path.insert(0, str(BACKEND))
-
 from gradio_ui.tabs import (
+    build_architecture_tab,
+    build_dataset_tab,
     build_train_tab,
     build_inference_tab,
     build_evaluate_tab,
-    build_dataset_tab,
-    build_architecture_tab,
+    build_quickstart_tab,
 )
 
+LOGO_PATH = pathlib.Path(__file__).resolve().parent / "gradio_ui" / "assets" / "bananaall-logo.webp"
 
-def run_worker(script_name, config, cancel_flag=None):
-    """Run backend/<script_name> with a temp JSON config; yield parsed events."""
-    script = BACKEND / script_name
-    if not script.is_file():
-        yield {"type": "error", "message": f"Missing backend worker: {script}"}
-        return
-
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
-        json.dump(config, fh, default=str)
-        config_path = fh.name
-
-    proc = subprocess.Popen(
-        [sys.executable, str(script), config_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        cwd=str(BACKEND),
-    )
-
-    def _read_stderr():
-        for line in proc.stderr:
-            if line.strip():
-                print(f"[stderr:{script_name}] {line.rstrip()}", file=sys.stderr, flush=True)
-
-    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-    stderr_thread.start()
-
-    try:
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                yield {"type": "log", "message": line}
-    finally:
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        os.unlink(config_path)
+theme = Dark()
 
 
-def format_event(event):
-    """Convert a backend JSON event into a short display string."""
-    kind = event.get("type", "log")
-    if kind == "status":
-        return f"⏳ {event.get('message', '')}"
-    if kind == "log":
-        return f"   {event.get('message', '')}"
-    if kind == "metric":
-        parts = [f"{k}={v}" for k, v in event.items() if k not in ("type",)]
-        return "📊 " + "  ".join(parts)
-    if kind == "progress":
-        step = event.get("step", 0)
-        total = event.get("totalSteps", "?")
-        acc = event.get("accumulationStep", 0)
-        acc_total = event.get("accumulationTotal", "?")
-        lr = event.get("learningRate")
-        extra = f"  lr={lr:.2e}" if isinstance(lr, (int, float)) else ""
-        tokens = ""
-        if "tokensSeen" in event:
-            tokens = f"  tokens={event['tokensSeen']:,}/{event.get('totalTokens', '?'):,}"
-        elapsed = event.get("elapsedSeconds")
-        etime = f"  {elapsed:.0f}s" if isinstance(elapsed, (int, float)) else ""
-        return f"🔄 step {step}/{total}  micro {acc}/{acc_total}{lr and extra}{tokens}{etime}"
-    if kind == "architecture":
-        return (f"🏗️  target={event.get('targetM')}M  actual={event.get('parameters'):,} params  "
-                f"layers={event.get('layers')}  executions={event.get('executions')}")
-    if kind == "result":
-        return f"✅ result[{event.get('task')}]: {json.dumps(event.get('result'), default=str)[:400]}"
-    if kind == "complete":
-        return f"✅ COMPLETE — {event.get('message', '')}"
-    if kind == "error":
-        return f"❌ ERROR: {event.get('message', '')}"
-    return json.dumps(event, default=str)
+def build_app():
+    status = environment_status()
+
+    with gr.Blocks(
+        title="BananaAll Studio",
+        analytics_enabled=False,
+    ) as app:
+        # ----- Branded header -------------------------------------------
+        with gr.Row(elem_id="banana-header"):
+            gr.Image(
+                value=str(LOGO_PATH) if LOGO_PATH.is_file() else None,
+                elem_classes=["brand"],
+                show_label=False,
+                container=False,
+                width=48,
+                height=48,
+                interactive=False,
+            )
+            with gr.Column(scale=8):
+                gr.Markdown(
+                    "<h1 style='margin:0;font-size:1.6rem;font-weight:700;"
+                    "letter-spacing:-0.02em;'>BananaAll Studio</h1>"
+                    "<div class='subtitle' style='margin:2px 0 0 0;font-size:0.85rem;"
+                    "color:var(--body-text-color-subdued);'>"
+                    "Train, fine-tune, evaluate, and chat with small language "
+                    "models — locally.</div>"
+                )
+            with gr.Column(scale=2, min_width=180):
+                gr.Markdown(
+                    f"""<div style="text-align:right;font-size:0.78rem;
+                    color:var(--body-text-color-subdued);">
+                    v0.2 · gradio {status['gradio']}<br/>
+                    {status['hf_message']}
+                    </div>"""
+                )
+
+        # ----- Status bar -----------------------------------------------
+        gr.Markdown(render_status_chips(status), elem_id="banana-status-bar")
+
+        # ----- Tabs -----------------------------------------------------
+        with gr.Tabs():
+            build_quickstart_tab()
+            build_architecture_tab()
+            build_dataset_tab()
+            build_train_tab()
+            build_inference_tab()
+            build_evaluate_tab()
+
+        # ----- Footer ---------------------------------------------------
+        gr.Markdown(
+            "---\n"
+            "<span style='font-size:0.75rem;color:var(--body-text-color-subdued)'>"
+            "BananaAll · local-first SLM super app · "
+            "<a href='https://github.com/asukaa2/BananaAll' target='_blank'>"
+            "github.com/asukaa2/BananaAll</a></span>"
+        )
+
+    return app
 
 
-def stream_logs(config, script_name):
-    """Yield accumulating log text for a backend run."""
-    lines = []
-    for event in run_worker(script_name, config):
-        lines.append(format_event(event))
-        yield "\n".join(lines[-400:])
-
-
-if __name__ == '__main__':
-    parser = ArgumentParser(description='BananaAll Studio.', add_help=True)
-    parser.add_argument("--share", action="store_true", dest="share_enabled", default=False, help="Enable sharing")
-
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="BananaAll Studio", add_help=True)
+    parser.add_argument("--share", action="store_true", dest="share_enabled",
+                        default=False, help="Enable a public share link.")
+    parser.add_argument("--port", type=int, default=7860,
+                        help="Port to listen on (default: 7860)")
+    parser.add_argument("--host", type=str, default="0.0.0.0",
+                        help="Bind address (default: 0.0.0.0)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable Gradio debug mode.")
     args = parser.parse_args()
 
-    def build_app():
-        with gr.Blocks(title="BananaAll Studio") as app:
-            gr.Markdown("# 🍌 BananaAll Studio\n"
-                        "Train, fine-tune, evaluate, and chat with BananaAll / BananaMind models.")
-            with gr.Tabs():
-                build_architecture_tab()
-                build_dataset_tab()
-                build_train_tab(stream_logs)
-                build_inference_tab(stream_logs)
-                build_evaluate_tab(stream_logs)
-
-            return app
-
-    build_app().launch(
+    app = build_app()
+    app.launch(
+        server_name=args.host,
+        server_port=args.port,
         share=args.share_enabled,
-        server_name="0.0.0.0",
-        server_port=7860,
-        theme=theme
+        debug=args.debug,
+        show_error=True,
+        theme=theme,
+        css=CUSTOM_CSS,
     )

@@ -3,16 +3,135 @@ import json
 import os
 import pathlib
 import sys
+import threading
+from contextlib import contextmanager
+from queue import Queue, Empty
+
+# Module-level pointer to the active capturing emitter (if any).
+# When None (default), `emit()` prints to stdout, preserving the CLI behavior.
+# BananaAll runs at most one worker at a time, so a single slot is enough.
+_emitter_obj: "CapturingEmitter | None" = None
+_emitter_lock = threading.Lock()
+
+
+def _current_emitter():
+    return _emitter_obj
 
 
 def emit(kind, **fields):
-    print(json.dumps({"type": kind, **fields}, default=str), flush=True)
+    """Emit a worker event.
+
+    When a capturing emitter is active (in-process run), push to its queue.
+    Otherwise (CLI run), print a JSON line to stdout — that keeps the
+    original subprocess contract intact for users who still want to launch
+    workers via the command line.
+    """
+    global _emitter_obj
+    emitter = _emitter_obj
+    event = {"type": kind, **fields}
+    if emitter is not None:
+        emitter.add(event)
+        return
+    print(json.dumps(event, default=str), flush=True)
 
 
 def fail(exc):
+    """Emit an error event and exit the CLI worker.
+
+    In-process runs let the exception propagate to `run_in_process`, which
+    captures it and emits a clean error event (no double-report).
+    """
     import traceback
     emit("error", message=str(exc), detail=traceback.format_exc())
-    sys.exit(1)
+    if _current_emitter() is None:
+        sys.exit(1)
+    raise exc
+
+
+class CapturingEmitter:
+    """Thread-safe queue that captures `emit()` calls for in-process runs."""
+
+    _SENTINEL = object()
+
+    def __init__(self):
+        self.queue: "Queue[dict]" = Queue()
+        self._closed = False
+
+    def add(self, event: dict) -> None:
+        if self._closed:
+            return
+        self.queue.put(event)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.queue.put(self._SENTINEL)
+
+
+@contextmanager
+def capture_events():
+    """Activate a capturing emitter for the current thread.
+
+    Any `emit()` call (from any thread) will be pushed to the emitter's
+    queue while this context is active. Restores the previous emitter on
+    exit so nested/sequential runs are safe.
+    """
+    global _emitter_obj
+    emitter = CapturingEmitter()
+    with _emitter_lock:
+        previous = _emitter_obj
+        _emitter_obj = emitter
+    try:
+        yield emitter
+    finally:
+        with _emitter_lock:
+            _emitter_obj = previous
+        emitter.close()
+
+
+def run_in_process(module_name: str, config: dict):
+    """Run `backend.<module_name>.main(config)` in a worker thread, yielding
+    captured events on the calling thread.
+
+    This replaces the subprocess spawn — the UI gets parsed event dicts in
+    real time without spawning a separate Python process.
+    """
+    import importlib
+    module = importlib.import_module(module_name)
+    if not hasattr(module, "main"):
+        yield {"type": "error",
+               "message": f"Module {module_name} has no main(config)"}
+        return
+
+    captured_exc: list[BaseException] = []
+
+    def worker():
+        try:
+            module.main(config)
+        except BaseException as exc:  # noqa: BLE001 — surface to UI
+            captured_exc.append(exc)
+
+    with capture_events() as emitter:
+        thread = threading.Thread(target=worker, daemon=True,
+                                  name=f"bananaall-{module_name}")
+        thread.start()
+        # Poll the queue, periodically checking the worker thread's liveness.
+        # This lets the consumer (Gradio generator) cancel between events.
+        while True:
+            try:
+                event = emitter.queue.get(timeout=0.3)
+                yield event
+            except Empty:
+                if not thread.is_alive() and emitter.queue.empty():
+                    break
+        thread.join(timeout=2.0)
+
+    if captured_exc:
+        exc = captured_exc[0]
+        if not isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            yield {"type": "error",
+                   "message": f"{exc.__class__.__name__}: {exc}"}
 
 
 def normalize_repo(value):

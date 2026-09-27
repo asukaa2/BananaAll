@@ -4,8 +4,9 @@ import sys
 
 import gradio as gr
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.getcwd()).resolve()
 BACKEND = ROOT / "backend"
+
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 

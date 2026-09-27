@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 from queue import Queue, Empty
+from argparse import ArgumentParser
 
 import gradio as gr
 from gradio_ui.theme.dark import Dark

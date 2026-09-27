@@ -21,7 +21,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
-from tabs import (
+from gradio_ui.tabs import (
     build_train_tab,
     build_inference_tab,
     build_evaluate_tab,

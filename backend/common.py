@@ -149,6 +149,7 @@ def load_source(source, streaming=True):
         raise ValueError("Dataset source is empty")
     split = source.get("split") or "train"
     config = source.get("config") or None
+    revision = source.get("revision") or None
     path = pathlib.Path(os.path.expanduser(repo))
     if path.exists():
         extension = path.suffix.lower()
@@ -159,6 +160,8 @@ def load_source(source, streaming=True):
     kwargs = {"split": split, "streaming": streaming}
     if config:
         kwargs["name"] = config
+    if revision:
+        kwargs["revision"] = revision
     return load_dataset(repo, **kwargs)
 
 

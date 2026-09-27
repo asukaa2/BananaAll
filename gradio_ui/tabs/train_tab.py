@@ -1,13 +1,21 @@
 """Training tab — builds a config and streams backend/train.py events in-process.
 
-Improvements:
-  - Editable DataFrame replaces the fragile pipe-delimited dataset textarea.
-  - Clearer mode-switch UX (pretraining / full fine-tune / LoRA / full).
-  - Live log box keeps formatted event summaries; progress events show on top.
+Improvements (rev 2):
+  - Fixes `ValueError: truth value of a DataFrame is ambiguous` — Gradio
+    passes a pandas DataFrame, not a list of lists; we explicitly coerce
+    via `.values.tolist()` before iterating.
+  - Adds `revision` and `mapping` columns to the dataset DataFrame, so
+    users can pull a dataset from a specific HF revision/branch and
+    override the auto-detected field mapping when a custom dataset has
+    non-standard column names.
+  - Adds "Add row" / "Clear" buttons and a row of dataset-preset chips.
 """
+import json
+
 import gradio as gr
 
-from .._worker import stream_events, stream_logs
+from .._helpers import DATASET_PRESETS
+from .._worker import stream_events
 
 
 PRETRAINING_DEFAULT = {
@@ -32,43 +40,111 @@ PRETRAINING_DEFAULT = {
     "datasets": [],
 }
 
-DATASET_HEADERS = ["id", "split", "config", "weight", "tokenLimit", "enabled"]
+# Order MUST match the datatype list below.
+DATASET_HEADERS = [
+    "id", "split", "config", "revision",
+    "weight", "tokenLimit", "mapping", "enabled",
+]
+DATASET_DATATYPES = [
+    "str", "str", "str", "str",
+    "number", "number", "str", "bool",
+]
 DATASET_PLACEHOLDER_ROW = [
-    "BananaMind/BananaMind-Base-Bench-1.1", "train", "", 1.0, 5000000, True
+    "BananaMind/BananaMind-Base-Bench-1.1", "train", "", "", 1.0, 5000000, "", True
 ]
 
 
-def _dataframe_to_datasets(rows):
-    """Convert the editable DataFrame rows into backend dataset dicts."""
+def _coerce_rows(value):
+    """Coerce a gr.Dataframe value (pandas DataFrame / numpy / list) to a
+    plain list of lists, without triggering ambiguous DataFrame truthiness.
+
+    This is the fix for `ValueError: The truth value of a DataFrame is
+    ambiguous. Use a.empty, a.bool(), a.item(), a.any() or a.all().`
+    """
+    if value is None:
+        return []
+    # pandas DataFrame
+    if hasattr(value, "values") and hasattr(value.values, "tolist"):
+        return value.values.tolist()
+    # numpy array / 2D ndarray
+    if hasattr(value, "tolist"):
+        try:
+            return value.tolist()
+        except Exception:
+            pass
+    # Already a list of lists (or list of pandas Series)
+    if isinstance(value, (list, tuple)):
+        out = []
+        for row in value:
+            if row is None:
+                continue
+            if hasattr(row, "tolist"):
+                out.append(row.tolist())
+            elif isinstance(row, (list, tuple)):
+                out.append(list(row))
+            else:
+                out.append([row])
+        return out
+    return []
+
+
+def _parse_mapping(raw):
+    """Parse a JSON object string into a mapping dict, or return None."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        obj = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def _dataframe_to_datasets(value):
+    """Convert the editable DataFrame into backend dataset dicts."""
+    rows = _coerce_rows(value)
     out = []
-    for row in rows or []:
-        # Skip fully-empty rows
+    for row in rows:
         if not any(str(v).strip() for v in row if v is not None):
             continue
+        # Pad to expected length so we don't IndexError on partial rows.
         cells = list(row) + [None] * (len(DATASET_HEADERS) - len(row))
-        id_val, split, config, weight, token_limit, enabled = cells[:6]
-        if not str(id_val or "").strip():
+        id_val, split, config, revision, weight, token_limit, mapping, enabled = cells[:8]
+        if id_val is None or not str(id_val).strip():
             continue
         try:
             weight_f = float(weight) if weight not in (None, "") else 1.0
         except (TypeError, ValueError):
             weight_f = 1.0
         try:
-            token_limit_i = int(token_limit) if token_limit not in (None, "") else None
+            token_limit_i = (int(token_limit)
+                              if token_limit not in (None, "") else None)
         except (TypeError, ValueError):
             token_limit_i = None
         try:
             enabled_b = bool(enabled)
         except Exception:
             enabled_b = True
-        out.append({
+
+        ds = {
             "id": str(id_val).strip(),
             "split": str(split or "").strip() or "train",
             "config": str(config or "").strip() or None,
             "weight": weight_f,
             "enabled": enabled_b,
-            **({"tokenLimit": token_limit_i} if token_limit_i is not None else {}),
-        })
+        }
+        if token_limit_i is not None:
+            ds["tokenLimit"] = token_limit_i
+        if str(revision or "").strip():
+            ds["revision"] = str(revision).strip()
+        mapping_dict = _parse_mapping(mapping)
+        if mapping_dict:
+            ds["mapping"] = mapping_dict
+        out.append(ds)
     return out
 
 
@@ -130,6 +206,30 @@ def _on_arch_change(arch):
     return gr.update(visible=arch == "custom")
 
 
+def _add_row(current):
+    rows = _coerce_rows(current)
+    rows.append(list(DATASET_PLACEHOLDER_ROW))
+    return gr.update(value=rows)
+
+
+def _clear_rows():
+    return gr.update(value=[])
+
+
+def _append_preset_dataset(current, preset_label):
+    """Append a new row for the given preset label."""
+    rows = _coerce_rows(current)
+    preset = next((p for p in DATASET_PRESETS if p["label"] == preset_label), None)
+    if preset is None:
+        return gr.update()
+    rows.append([
+        preset["id"],
+        preset.get("split", "train"),
+        "", "", 1.0, 1_000_000, "", True,
+    ])
+    return gr.update(value=rows)
+
+
 def build_train_tab():
     with gr.Tab("🚀 Train"):
         mode = gr.Radio(
@@ -153,20 +253,36 @@ def build_train_tab():
                     label="Custom modeling .py path", visible=False, scale=1)
             gr.Markdown(
                 "### Dataset mix\n"
-                "One row per source. `tokenLimit` is the total tokens to "
-                "consume from that source. Mix `weight` chooses the next "
-                "active source."
+                "One row per source. Type any Hugging Face dataset ID, "
+                "local path, or HF URL. `tokenLimit` = total tokens to "
+                "consume from that source; `weight` = mix weight for "
+                "selecting the next active source; `revision` = optional "
+                "HF branch/commit; `mapping` = optional JSON override "
+                "(e.g. `{\"messages\":\"conversations\"}`) for "
+                "non-standard column names."
             )
+
+            # Quick-add preset chips for common HF datasets
+            with gr.Row(elem_classes=["preset-row"]):
+                preset_buttons = [
+                    gr.Button(item["label"], size="sm", variant="secondary")
+                    for item in DATASET_PRESETS
+                ]
+
             datasets_df = gr.Dataframe(
                 headers=DATASET_HEADERS,
-                datatype=["str", "str", "str", "number", "number", "bool"],
-                value=[DATASET_PLACEHOLDER_ROW],
+                datatype=DATASET_DATATYPES,
+                value=[list(DATASET_PLACEHOLDER_ROW)],
                 row_count=(1, "dynamic"),
                 column_count=(len(DATASET_HEADERS), "fixed"),
                 interactive=True,
                 wrap=True,
                 label="Datasets",
             )
+            with gr.Row():
+                add_btn = gr.Button("➕ Add row", variant="secondary", size="sm")
+                clear_btn = gr.Button("🗑️ Clear rows", variant="secondary", size="sm")
+
             tokenizer_samples = gr.Number(value=2000,
                                           label="Tokenizer training samples",
                                           precision=0)
@@ -215,7 +331,6 @@ def build_train_tab():
             start_btn = gr.Button("▶️ Start training", variant="primary")
             stop_btn = gr.Button("⏹️ Stop", variant="stop")
 
-        # Status pill (last status event, mirrored from logs)
         status_pill = gr.Markdown("", elem_classes=["status-pill"])
         log_box = gr.Textbox(label="Live log", lines=24, max_lines=24,
                               autoscroll=True, interactive=False)
@@ -225,8 +340,17 @@ def build_train_tab():
         architecture.change(_on_arch_change, inputs=[architecture],
                             outputs=[custom_row])
 
+        # DataFrame row management
+        add_btn.click(_add_row, inputs=[datasets_df], outputs=[datasets_df])
+        clear_btn.click(_clear_rows, outputs=[datasets_df])
+        for btn, item in zip(preset_buttons, DATASET_PRESETS):
+            btn.click(
+                _append_preset_dataset,
+                inputs=[datasets_df, gr.State(item["label"])],
+                outputs=[datasets_df],
+            )
+
         def _run(*args):
-            mode_val = args[0]
             cfg = _build_config(*args)
             lines: list[str] = []
             last_status = ""

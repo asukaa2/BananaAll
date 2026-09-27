@@ -31,7 +31,7 @@ def build_inference_tab(stream_logs):
             mode = gr.Dropdown(["instruct", "base"], value="instruct", label="Mode")
 
         system_prompt = gr.Textbox(label="System prompt (instruct mode)", lines=2)
-        chatbot = gr.Chatbot(label="Conversation", height=380, type="messages")
+        chatbot = gr.Chatbot(label="Conversation", height=380)
 
         with gr.Row():
             user_msg = gr.Textbox(label="Your message", scale=4)
